@@ -35,6 +35,7 @@ from verl.utils.ulysses import (
 
 _PREFIX_GROUPER_PATCHED = False
 _PREFIX_GROUPER_SUPPORTED_ATTENTIONS = {"flash_attention_2", "flash_attention_3", "sdpa", "flex_attention", "eager"}
+_QWEN3_MOE_SPARSE_MOE_PATCHED = False
 
 
 def _create_prefix_grouper_wrapper(original_fn):
@@ -70,6 +71,62 @@ def apply_prefix_grouper_patch():
 
     _PREFIX_GROUPER_PATCHED = True
     print(f"[PrefixGrouper] Patched: {patched}")
+
+
+def _qwen3_moe_sparse_moe_block_forward_with_empty_expert_grads(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    batch_size, sequence_length, hidden_dim = hidden_states.shape
+    hidden_states = hidden_states.view(-1, hidden_dim)
+    router_logits = self.gate(hidden_states)
+
+    routing_weights = torch.nn.functional.softmax(router_logits, dim=1, dtype=torch.float)
+    routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+    if self.norm_topk_prob:
+        routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+    routing_weights = routing_weights.to(hidden_states.dtype)
+
+    final_hidden_states = torch.zeros(
+        (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
+    )
+
+    expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+    expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero(as_tuple=False).flatten()
+    hit_indices = expert_hit.tolist()
+
+    for expert_idx in hit_indices:
+        expert_layer = self.experts[expert_idx]
+        idx, top_x = torch.where(expert_mask[expert_idx])
+
+        current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
+        current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
+
+        final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
+
+    if self.training and torch.is_grad_enabled() and len(hit_indices) < self.num_experts:
+        hit_set = set(hit_indices)
+        empty_state = hidden_states.new_empty((0, hidden_dim))
+        zero = None
+        for expert_idx, expert_layer in enumerate(self.experts):
+            if expert_idx in hit_set:
+                continue
+            empty_output = expert_layer(empty_state)
+            zero = empty_output.sum() * 0 if zero is None else zero + empty_output.sum() * 0
+        if zero is not None:
+            final_hidden_states = final_hidden_states + zero
+
+    final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
+    return final_hidden_states, router_logits
+
+
+def patch_qwen3_moe_sparse_moe_block_forward():
+    global _QWEN3_MOE_SPARSE_MOE_PATCHED
+    if _QWEN3_MOE_SPARSE_MOE_PATCHED:
+        return
+
+    from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeSparseMoeBlock
+
+    Qwen3MoeSparseMoeBlock.forward = _qwen3_moe_sparse_moe_block_forward_with_empty_expert_grads
+    _QWEN3_MOE_SPARSE_MOE_PATCHED = True
+    print("Monkey patch Qwen3MoeSparseMoeBlock forward for FSDP sparse expert gradients")
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -355,6 +412,9 @@ def apply_monkey_patch(
 
         AutoModelForCausalLMWithValueHead.state_dict = state_dict
         print("Monkey patch state_dict in AutoModelForCausalLMWithValueHead. ")
+
+    if model.config.model_type == "qwen3_moe":
+        patch_qwen3_moe_sparse_moe_block_forward()
 
     # TODO: VLM models only, unify monkey patch to LLM models.
     if model.config.model_type in ["qwen2_5_vl", "qwen2_vl"]:

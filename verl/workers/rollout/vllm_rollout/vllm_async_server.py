@@ -182,6 +182,18 @@ class vLLMHttpServer:
         assert self._server_port is not None, "http server is not launched, port is None"
         return self._server_address, self._server_port
 
+    def _close_reserved_port_sockets(self):
+        """Release ports reserved during init before vLLM binds them."""
+        for attr in ("_master_sock", "_dp_rpc_sock", "_dp_master_sock"):
+            sock = getattr(self, attr, None)
+            if sock is None:
+                continue
+            try:
+                sock.close()
+            except OSError:
+                pass
+            setattr(self, attr, None)
+
     @property
     def lora_as_adapter(self) -> bool:
         return (
@@ -377,6 +389,7 @@ class vLLMHttpServer:
             cmds[server_args.subparser].validate(server_args)
 
         # 3. launch server
+        self._close_reserved_port_sockets()
         if self.node_rank == 0:
             await self.run_server(server_args)
         else:

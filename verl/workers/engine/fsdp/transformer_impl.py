@@ -82,6 +82,10 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 device_name = get_device_name()
 
 
+def _strtobool(value: str) -> bool:
+    return value.lower() in {"1", "true", "yes", "y", "on"}
+
+
 class FSDPEngine(BaseEngine):
     """
     Concrete Engine implementation using PyTorch FullyShardedDataParallel (FSDP).
@@ -301,7 +305,8 @@ class FSDPEngine(BaseEngine):
             module.to(torch_dtype)
 
             if self.model_config.enable_gradient_checkpointing:
-                module.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+                use_reentrant = _strtobool(os.getenv("VERL_GRADIENT_CHECKPOINTING_USE_REENTRANT", "0"))
+                module.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": use_reentrant})
         return module
 
     def _build_lora_module(self, module):
@@ -1109,7 +1114,7 @@ class FSDPEngineWithLMHead(FSDPEngine):
                             model_output[field_name] = torch.nested.nested_tensor_from_jagged(v, cu_seqlens)
             else:
                 logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
-                logits_rmpad.div_(temperature_rmpad.clamp(min=1e-8).unsqueeze(-1).to(logits_rmpad.dtype))
+                logits_rmpad = logits_rmpad / temperature_rmpad.clamp(min=1e-8).unsqueeze(-1).to(logits_rmpad.dtype)
 
                 # if use_sp: ((total_nnz / sp) + pad) ; if not use_sp: (batch, seqlen)
                 inplace_backward = True
@@ -1193,7 +1198,7 @@ class FSDPEngineWithLMHead(FSDPEngine):
                 logits = output.logits  # (bsz, response_length, vocab_size)
                 temperature = output_args["temperature"]  # (bsz,)
                 temperature = temperature.unsqueeze(-1).unsqueeze(-1)
-                logits.div_(temperature.clamp(min=1e-8).to(logits.dtype))
+                logits = logits / temperature.clamp(min=1e-8).to(logits.dtype)
 
                 if calculate_entropy:
                     if not self.engine_config.entropy_checkpointing:

@@ -56,10 +56,19 @@ def default_compute_score(
 
         # from . import math_verify
         # res = math_verify.compute_score(solution_str, ground_truth)
-    elif data_source in ["math_dapo", "math", "math_dapo_reasoning"] or data_source.startswith("aime"):
+    elif data_source in ["math_dapo", "math", "math_dapo_reasoning"]:
         from . import math_dapo
 
         res = math_dapo.compute_score(solution_str, ground_truth)
+    elif data_source.startswith("aime"):
+        from . import prime_math
+
+        correct, _, pred = prime_math.compute_score(solution_str, ground_truth)
+        res = {
+            "score": 1.0 if correct else -1.0,
+            "acc": correct,
+            "pred": pred,
+        }
     elif data_source in [
         "numina_aops_forum",
         "numina_synthetic_math",
