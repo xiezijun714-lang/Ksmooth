@@ -294,6 +294,7 @@ class ToolAgentLoop(AgentLoopBase):
         for tool_call in agent_data.tool_calls[: self.max_parallel_calls]:
             tasks.append(self._call_tool(tool_call, agent_data.tools_kwargs, agent_data))
             tool_call_names.append(tool_call.name)
+        is_finish_tool = any(str(name).lower() in ("finish", "stop", "submit") for name in tool_call_names)
 
         with simple_timer("tool_calls", agent_data.metrics):
             responses = await asyncio.gather(*tasks)
@@ -401,6 +402,8 @@ class ToolAgentLoop(AgentLoopBase):
         if agent_data.response_logprobs:
             agent_data.response_logprobs += [0.0] * len(response_ids)
         agent_data.user_turns += 1
+        if is_finish_tool:
+            return AgentState.TERMINATED
         return AgentState.GENERATING
 
     async def _call_tool(

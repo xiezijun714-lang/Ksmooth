@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import secrets
+import socket
 from pathlib import Path
 from typing import Any, Optional
 
@@ -56,6 +57,80 @@ logger = logging.getLogger(__file__)
 logger.setLevel(logging.INFO)
 
 visible_devices_keyword = get_visible_devices_keyword()
+
+# SGLang derives several local TCP/ZMQ ports from ServerArgs.port when DP
+# attention or related handshakes are enabled. Give each Ray replica a separate
+# slot so multiple rollout replicas can share one physical node.
+_SGLANG_DEFAULT_PORT_RANGE = (30000, 39000)
+_SGLANG_PORT_STRIDE = 512
+_SGLANG_DERIVED_PORT_OFFSETS = (0, 13, 64, 233, 234, 235, 236, 237, 238)
+_SGLANG_NCCL_PORT_OFFSET = 64
+_SGLANG_OPEN_PORT_OFFSET = 320
+_SGLANG_REQUIRED_PORT_OFFSET = max(*_SGLANG_DERIVED_PORT_OFFSETS, _SGLANG_OPEN_PORT_OFFSET)
+
+
+def _parse_port_range(env_name: str, default: tuple[int, int]) -> tuple[int, int]:
+    raw_range = os.environ.get(env_name)
+    if not raw_range:
+        return default
+
+    parts = [part.strip() for part in raw_range.replace(":", ",").split(",") if part.strip()]
+    if len(parts) != 2:
+        raise ValueError(f"{env_name} must be formatted as 'start,end' or 'start:end'.")
+    start, end = (int(part) for part in parts)
+    if start <= 0 or end <= start or end > 65535:
+        raise ValueError(f"Invalid {env_name}={raw_range!r}.")
+    return start, end
+
+
+def _is_tcp_port_available(port: int) -> bool:
+    if port <= 0 or port > 65535:
+        return False
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("", port))
+            sock.listen(1)
+            return True
+    except OSError:
+        return False
+
+
+def _sglang_port_window_available(base_port: int, range_end: int) -> bool:
+    for offset in (*_SGLANG_DERIVED_PORT_OFFSETS, _SGLANG_OPEN_PORT_OFFSET):
+        port = base_port + offset
+        if port >= range_end or not _is_tcp_port_available(port):
+            return False
+    return True
+
+
+def _select_sglang_server_port(replica_rank: int, node_rank: int, nnodes: int) -> int:
+    start, end = _parse_port_range("SGLANG_SERVER_PORT_RANGE", _SGLANG_DEFAULT_PORT_RANGE)
+    stride = int(os.environ.get("SGLANG_SERVER_PORT_STRIDE", _SGLANG_PORT_STRIDE))
+    if stride <= _SGLANG_REQUIRED_PORT_OFFSET:
+        raise ValueError(
+            f"SGLANG_SERVER_PORT_STRIDE={stride} is too small; "
+            f"must be > {_SGLANG_REQUIRED_PORT_OFFSET}."
+        )
+
+    slot_index = max(replica_rank, 0) * max(nnodes, 1) + max(node_rank, 0)
+    slot_start = start + slot_index * stride
+    slot_end = min(slot_start + stride, end)
+    if slot_start >= end or slot_end - slot_start <= _SGLANG_REQUIRED_PORT_OFFSET:
+        raise ValueError(
+            f"SGLANG_SERVER_PORT_RANGE={start},{end} is too small for "
+            f"replica_rank={replica_rank}, node_rank={node_rank}, nnodes={nnodes}, stride={stride}."
+        )
+
+    last_base = slot_end - _SGLANG_REQUIRED_PORT_OFFSET
+    for base_port in range(slot_start, last_base):
+        if _sglang_port_window_available(base_port, end):
+            return base_port
+
+    raise RuntimeError(
+        f"Could not find a free SGLang port window in [{slot_start}, {slot_end}) "
+        f"for replica_rank={replica_rank}, node_rank={node_rank}."
+    )
 
 
 def _extract_prompt_logprobs_sglang(
@@ -309,6 +384,24 @@ class SGLangHttpServer:
             else json.dumps({}),
             **engine_kwargs,
         }
+        if "port" not in args or args["port"] is None:
+            args["port"] = _select_sglang_server_port(self.replica_rank, self.node_rank, self.nnodes)
+        if "nccl_port" not in args or args["nccl_port"] is None:
+            nccl_port = args["port"] + _SGLANG_NCCL_PORT_OFFSET
+            if nccl_port > 65535:
+                raise ValueError(f"Derived SGLang nccl_port={nccl_port} exceeds 65535.")
+            args["nccl_port"] = nccl_port
+        sglang_open_port = args["port"] + _SGLANG_OPEN_PORT_OFFSET
+        if sglang_open_port > 65535:
+            raise ValueError(f"Derived SGLang internal port={sglang_open_port} exceeds 65535.")
+        logger.info(
+            "SGLangHttpServer replica_rank=%s node_rank=%s uses base port %s, nccl_port=%s, internal_port_start=%s",
+            self.replica_rank,
+            self.node_rank,
+            args["port"],
+            args.get("nccl_port"),
+            sglang_open_port,
+        )
 
         # update lora-related args
         if self.model_config.lora_rank > 0:
@@ -383,6 +476,7 @@ class SGLangHttpServer:
         # https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/entrypoints/http_server.py
         sglang.srt.entrypoints.engine._set_envs_and_config = _set_envs_and_config
         os.environ["SGLANG_BLOCK_NONZERO_RANK_CHILDREN"] = "0"
+        os.environ["SGLANG_PORT"] = str(sglang_open_port)
         server_args = ServerArgs(**args)
         # For SGLang main branch or version >= 0.5.10
         # The latest main branch of SGLang has wrapped the _launch_subprocesses function inside the Engine class
