@@ -36,6 +36,26 @@ logger = logging.getLogger(__file__)
 CONTROL_METHOD_CONCURRENCY = 16
 
 
+def _get_rollout_master_port_range(replica_rank: int = 0) -> list[int] | None:
+    port_range = os.environ.get("ROLLOUT_MASTER_PORT_RANGE")
+    if not port_range:
+        return None
+    parts = [part.strip() for part in port_range.replace(":", ",").split(",") if part.strip()]
+    if len(parts) != 2:
+        raise ValueError("ROLLOUT_MASTER_PORT_RANGE must be formatted as 'start,end' or 'start:end'.")
+    start, end = (int(part) for part in parts)
+    if start <= 0 or end <= start:
+        raise ValueError(f"Invalid ROLLOUT_MASTER_PORT_RANGE={port_range!r}.")
+    stride = 32
+    replica_start = start + max(replica_rank, 0) * stride
+    replica_end = min(replica_start + stride, end)
+    if replica_start >= end or replica_end <= replica_start:
+        raise ValueError(
+            f"ROLLOUT_MASTER_PORT_RANGE={port_range!r} is too small for rollout replica_rank={replica_rank}."
+        )
+    return [replica_start, replica_end]
+
+
 class TokenOutput(BaseModel):
     token_ids: list[int]
     """response token ids"""
@@ -203,6 +223,7 @@ class RolloutReplica(ABC):
             resource_pool_spec=resource_pool_spec,
             mapping=None,
             max_colocate_count=2,
+            accelerator_type=self.config.get("resource_pool_accelerator_type", None),
         )
         resource_pool_manager.create_resource_pool()
         self.resource_pool = resource_pool_manager.resource_pool_dict[resource_pool_name]
@@ -221,6 +242,7 @@ class RolloutReplica(ABC):
             name_prefix=name_prefix,
             use_gpu=True,
             device_name="cuda" if not is_torch_npu_available(check_device=False) else "npu",
+            master_port_range=_get_rollout_master_port_range(self.replica_rank),
         )
         self.workers = worker_group.workers
         await self.launch_servers()

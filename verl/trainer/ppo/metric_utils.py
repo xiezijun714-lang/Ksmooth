@@ -643,6 +643,9 @@ def process_validation_metrics(
                 # compute mean and std
                 n_resps = len(var_vals)
                 metric = {f"mean@{n_resps}": float(np_mean(var_vals))}
+                for n in (4, 16):
+                    if n < n_resps:
+                        metric[f"mean@{n}"] = float(np_mean(var_vals[:n]))
 
                 if n_resps > 1:
                     metric[f"std@{n_resps}"] = float(np_std(var_vals))

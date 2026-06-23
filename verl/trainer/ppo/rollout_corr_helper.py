@@ -993,6 +993,10 @@ def compute_offpolicy_metrics(
         chi2_token = verl_F.masked_mean(rho_squared_token, response_mask) - 1.0
         metrics["chi2_token"] = chi2_token.detach().item()
 
+        tau = 2.0
+        tail_mask = log_ratio.abs() > math.log(tau)
+        metrics["ratio_tail_frac_tau_2"] = verl_F.masked_mean(tail_mask.float(), response_mask).detach().item()
+
         # Sequence-level: E_seq[(Π ρ_t)²] - 1 = E_seq[exp(2 * Σ log ρ_t)] - 1
         log_ratio_sum = verl_F.masked_sum(log_ratio, response_mask, axis=-1)  # Σ log ρ_t per sequence
         log_ratio_sum_safe = torch.clamp(log_ratio_sum, min=-SAFETY_BOUND, max=SAFETY_BOUND)

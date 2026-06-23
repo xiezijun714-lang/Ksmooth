@@ -332,29 +332,6 @@ class AgentLoopBase(ABC):
         if remove_system_prompt:
             prompt_ids = prompt_ids[len(self.system_prompt) :]
 
-        # Mirror the response-side ``response_ids[:response_length]`` cap on the prompt side:
-        # every prompt produced by the agent loop must fit in ``rollout.prompt_length`` so that
-        # ``_pad_token_ids`` (and downstream ``torch.cat``) can rely on uniform shapes.
-        # Multimodal prompts cannot be sliced here because placeholder tokens must remain
-        # aligned 1:1 with ``multi_modal_inputs`` features, so we fail loudly instead.
-        prompt_length = self.rollout_config.prompt_length
-        if len(prompt_ids) > prompt_length:
-            if images or videos or audios:
-                raise ValueError(
-                    f"Multimodal prompt produced {len(prompt_ids)} tokens, exceeding "
-                    f"rollout.prompt_length={prompt_length}. Truncating multimodal token "
-                    f"sequences corrupts vision/audio feature alignment, so this is treated "
-                    f"as a configuration error. Reduce the multimodal input size "
-                    f"(e.g. ``total_pixels`` / ``max_pixels`` / fps / number of frames) or "
-                    f"increase ``rollout.prompt_length``."
-                )
-            logger.warning(
-                "Prompt of %d tokens exceeds rollout.prompt_length=%d; left-truncating.",
-                len(prompt_ids),
-                prompt_length,
-            )
-            prompt_ids = prompt_ids[-prompt_length:]
-
         return prompt_ids
 
     @abstractmethod
@@ -646,9 +623,13 @@ class AgentLoopWorker:
         # - position_ids: sequential positions for tokens, starting at 0
         #   e.g., [0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,0,0,0,0]
 
+        prompt_ids = output.prompt_ids
+        if len(prompt_ids) > self.rollout_config.prompt_length:
+            prompt_ids = prompt_ids[-self.rollout_config.prompt_length :]
+
         # TODO(wuxibin): remove padding and use tensordict.
         prompt_output = self._pad_token_ids(
-            output.prompt_ids,
+            prompt_ids,
             max_length=self.rollout_config.prompt_length,
             padding_side="left",
             return_attention_mask=True,
@@ -693,7 +674,7 @@ class AgentLoopWorker:
             routed_experts = torch.zeros(1, total_length, layer_num, topk_num, dtype=experts_tensor.dtype)
 
             # Calculate start position: left padding means original prompt starts at the end
-            start_pos = prompt_output["input_ids"].shape[1] - len(output.prompt_ids)
+            start_pos = prompt_output["input_ids"].shape[1] - len(prompt_ids)
             end_pos = min(start_pos + length, total_length)
 
             # Add boundary checks for robustness
@@ -718,7 +699,7 @@ class AgentLoopWorker:
         await self._compute_score([output], kwargs=kwargs)
         await self._compute_teacher_logprobs(
             output,
-            prompt_ids=output.prompt_ids,
+            prompt_ids=prompt_ids,
             response_ids=output.response_ids,
             validate=validate,
             sample_kwargs=kwargs,
@@ -736,7 +717,7 @@ class AgentLoopWorker:
                 teacher_logprobs,
                 prompt_width=prompt_output["input_ids"].shape[1],
                 response_width=response_output["input_ids"].shape[1],
-                prompt_length=len(output.prompt_ids),
+                prompt_length=len(prompt_ids),
                 response_length=len(output.response_ids),
                 pad_token_id=self.tokenizer.pad_token_id,
             )

@@ -187,6 +187,7 @@ class ResourcePoolManager:
     resource_pool_spec: dict[str, list[int]]
     mapping: dict[int, str]
     max_colocate_count: int = 3
+    accelerator_type: Optional[str] = None
     resource_pool_dict: dict[str, RayResourcePool] = field(default_factory=dict)
 
     def create_resource_pool(self):
@@ -207,6 +208,7 @@ class ResourcePoolManager:
                 use_gpu=True,
                 max_colocate_count=self.max_colocate_count,
                 name_prefix=resource_pool_name,
+                accelerator_type=self.accelerator_type,
             )
             self.resource_pool_dict[resource_pool_name] = resource_pool
 

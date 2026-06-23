@@ -77,18 +77,24 @@ def _set_envs_and_config(server_args: ServerArgs):
             "Please uninstall the old version and reinstall the latest version by following the instructions at https://docs.flashinfer.ai/installation.html.",
         )
     if is_cuda():
+        kernel_check_error = None
         try:
-            # For sglang 0.5.12 and sglang_kernel > 0.4.2, naming is sglang_kernel
-            assert_pkg_version(
-                "sglang_kernel",
-                "0.1.1",
-                "Please reinstall the latest version with `pip install follow https://sgl-project.github.io/get_started/install.html#for-cuda-13`",
-            )
-        except AssertionError:
             assert_pkg_version(
                 "sgl_kernel",
                 "0.1.1",
                 "Please reinstall the latest version with `pip install sgl-kernel --force-reinstall`",
+            )
+        except Exception as err:
+            kernel_check_error = err
+        else:
+            kernel_check_error = None
+
+        if kernel_check_error is not None:
+            # For sglang 0.5.12 and sglang_kernel > 0.4.2, naming is sglang_kernel.
+            assert_pkg_version(
+                "sglang_kernel",
+                "0.1.1",
+                "Please reinstall the latest version with `pip install follow https://sgl-project.github.io/get_started/install.html#for-cuda-13`",
             )
 
     # Set mp start method

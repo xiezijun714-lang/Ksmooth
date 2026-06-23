@@ -28,6 +28,9 @@ max_response_length=${MAX_RESPONSE_LENGTH:-8192}
 ppo_max_token_len_per_gpu=${PPO_MAX_TOKEN_LEN_PER_GPU:-10240}
 enable_gradient_checkpointing=${ENABLE_GRADIENT_CHECKPOINTING:-True}
 use_torch_compile=${USE_TORCH_COMPILE:-False}
+actor_param_offload=${ACTOR_PARAM_OFFLOAD:-False}
+actor_optimizer_offload=${ACTOR_OPTIMIZER_OFFLOAD:-True}
+ref_param_offload=${REF_PARAM_OFFLOAD:-True}
 
 actor_lr=${ACTOR_LR:-1e-6}
 entropy_coeff=${ENTROPY_COEFF:-0}
@@ -82,8 +85,8 @@ ACTOR=(
     actor_rollout_ref.actor.entropy_coeff=${entropy_coeff}
     actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16
     actor_rollout_ref.actor.fsdp_config.use_torch_compile=${use_torch_compile}
-    actor_rollout_ref.actor.fsdp_config.param_offload=True
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=True
+    actor_rollout_ref.actor.fsdp_config.param_offload=${actor_param_offload}
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=${actor_optimizer_offload}
 )
 
 ROLLOUT=(
@@ -103,7 +106,7 @@ REF=(
     actor_rollout_ref.ref.log_prob_use_dynamic_bsz=True
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=${ppo_max_token_len_per_gpu}
     actor_rollout_ref.ref.fsdp_config.use_torch_compile=${use_torch_compile}
-    actor_rollout_ref.ref.fsdp_config.param_offload=True
+    actor_rollout_ref.ref.fsdp_config.param_offload=${ref_param_offload}
 )
 
 TRAINER=(

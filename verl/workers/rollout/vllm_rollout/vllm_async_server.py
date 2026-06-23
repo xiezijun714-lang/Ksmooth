@@ -1025,6 +1025,7 @@ class vLLMReplica(RolloutReplica):
                 # https://github.com/vllm-project/vllm/blob/c6b0a7d3ba03ca414be1174e9bd86a97191b7090/vllm/worker/worker_base.py#L445
                 "NCCL_CUMEM_ENABLE": "0",
                 "VLLM_ASCEND_AUTO_DETECT_QUANTIZATION": "0",
+                "VLLM_PORT": str(int(os.environ.get("VLLM_PORT_BASE", "18000")) + self.replica_rank * 100 + node_rank * 10),
             }
             if os.environ.get("VLLM_ASCEND_TASK_QUEUE_ENABLE", None):
                 # use VLLM_ASCEND_TASK_QUEUE_ENABLE to support different TASK_QUEUE_ENABLE mode for

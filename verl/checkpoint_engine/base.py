@@ -316,8 +316,11 @@ class CheckpointEngineWorker(Worker):
                 device_mesh=None,
                 **self.extra_rollout_kwargs,
             )
-        # sglang and trt-llm need device_mesh for internal communication
-        initialize_global_process_group_ray(timeout_second=None, backend="cpu:gloo")
+        # sglang and trt-llm need device_mesh for internal communication. vLLM
+        # does not use this torch distributed group, and initializing one per
+        # standalone rollout replica can collide on Ray-assigned MASTER_PORT.
+        if self.rollout_config.name in ("sglang", "trtllm"):
+            initialize_global_process_group_ray(timeout_second=None, backend="cpu:gloo")
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL, blocking=False)
     async def update_weights(self, global_steps: int = None):

@@ -672,12 +672,11 @@ def process_weights_after_loading_moe_for_vllm14(self, layer) -> None:
 
     self.moe_quant_config = self.get_fused_moe_quant_config(layer)
     if self.moe_quant_config:
-        assert self.experts_cls is not None
-
         # Check for the new API by inspecting the function signature, which is more
         # robust than version string comparison, especially for dev/pre-release versions.
         sig = inspect.signature(make_fp8_moe_kernel)
         if "routing_tables" in sig.parameters:
+            assert self.experts_cls is not None
             # vLLM >= 0.16+: routing_tables/shared_experts added, returns kernel directly
             self.moe_kernel = make_fp8_moe_kernel(
                 moe_quant_config=self.moe_quant_config,
@@ -687,7 +686,16 @@ def process_weights_after_loading_moe_for_vllm14(self, layer) -> None:
                 routing_tables=layer._maybe_init_expert_routing_tables(),
                 shared_experts=layer.shared_experts,
             )
+        elif "layer" in sig.parameters:
+            # vLLM 0.14.1 constructs experts internally from the layer.
+            self.kernel, self.use_inplace = make_fp8_moe_kernel(
+                layer=layer,
+                moe_quant_config=self.moe_quant_config,
+                moe_config=self.moe,
+                fp8_backend=self.fp8_backend,
+            )
         else:
+            assert self.experts_cls is not None
             # vLLM 0.14/0.15: routing_tables/shared_experts not supported, returns (kernel, use_inplace)
             self.kernel, self.use_inplace = make_fp8_moe_kernel(
                 moe_quant_config=self.moe_quant_config,

@@ -473,6 +473,15 @@ class FullyAsyncTrainer(SeparateRayPPOTrainer):
         If local_trigger_step == 2, 3, ..., restore the parameters of version 1 to calculate the old_log_prob,
         then restore the parameters of the current version.
         """
+        if os.getenv("FULLY_ASYNC_SKIP_OLD_LOGPROB_CPU_SNAPSHOT", "0").lower() in ("1", "true", "yes", "on"):
+            if not getattr(self, "_warned_skip_old_logprob_cpu_snapshot", False):
+                print(
+                    "[FullyAsyncTrainer] FULLY_ASYNC_SKIP_OLD_LOGPROB_CPU_SNAPSHOT is enabled; "
+                    "recomputing old_log_probs with current actor params without CPU snapshot/restore."
+                )
+                self._warned_skip_old_logprob_cpu_snapshot = True
+            return super()._compute_old_log_prob(batch)
+
         if self.local_trigger_step == 1:
             self.actor_rollout_wg.save_model_to_cpu(1)
             old_log_prob, old_log_prob_mfu = super()._compute_old_log_prob(batch)

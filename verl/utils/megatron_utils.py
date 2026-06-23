@@ -1600,6 +1600,11 @@ def copy_megatron_model_to_cpu(models):
         dict: CPU state containing copied parameters and buffers
     """
     cpu_state = {}
+    pin_cpu_snapshot = os.getenv("VERL_MEGATRON_CPU_SNAPSHOT_PIN_MEMORY", "0").lower() in ("1", "true", "yes", "on")
+
+    def clone_to_cpu(tensor: torch.Tensor) -> torch.Tensor:
+        cpu_tensor = tensor.detach().cpu().clone()
+        return cpu_tensor.pin_memory() if pin_cpu_snapshot else cpu_tensor
 
     for model_idx, model_chunk in enumerate(models):
         if isinstance(model_chunk, DDP):
@@ -1614,9 +1619,9 @@ def copy_megatron_model_to_cpu(models):
 
                     # Copy parameter data to CPU
                     if buffer.param_data.storage().size() > 0:
-                        buffer_state["param_data"] = buffer.param_data.data.cpu().clone().pin_memory()
+                        buffer_state["param_data"] = clone_to_cpu(buffer.param_data.data)
                     else:
-                        buffer_state["param_data"] = buffer.param_data.cpu_data.clone().pin_memory()
+                        buffer_state["param_data"] = clone_to_cpu(buffer.param_data.cpu_data)
 
                     buffer_list.append(buffer_state)
                 buffer_states.append(buffer_list)
@@ -1626,7 +1631,7 @@ def copy_megatron_model_to_cpu(models):
             # Handle non-DDP models (ref module)
             model_state = {}
             for name, param in model_chunk.named_parameters():
-                param_state = {"data": param.data.cpu().clone().pin_memory()}
+                param_state = {"data": clone_to_cpu(param.data)}
                 model_state[name] = param_state
 
             cpu_state[f"model_chunk_{model_idx}"] = {"model_state": model_state, "is_ddp": False}
